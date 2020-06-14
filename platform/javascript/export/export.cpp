@@ -28,6 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                */
 /*************************************************************************/
 
+#include "core/io/compression.h"
 #include "core/io/json.h"
 #include "core/io/tcp_server.h"
 #include "core/io/zip_io.h"
@@ -293,6 +294,7 @@ void EditorExportPlatformJavaScript::get_export_options(List<ExportOption> *r_op
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "html/head_include", PROPERTY_HINT_MULTILINE_TEXT), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "custom_template/release", PROPERTY_HINT_GLOBAL_FILE, "*.zip"), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "custom_template/debug", PROPERTY_HINT_GLOBAL_FILE, "*.zip"), ""));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "compression/method", PROPERTY_HINT_ENUM, "None,Zstandard,Gzip"), 2));
 }
 
 String EditorExportPlatformJavaScript::get_name() const {
@@ -362,6 +364,10 @@ Error EditorExportPlatformJavaScript::export_project(const Ref<EditorExportPrese
 	String custom_release = p_preset->get("custom_template/release");
 	String custom_html = p_preset->get("html/custom_html_shell");
 
+	// Retrieve compression method from the preset, +1 is to match Compression::Method enum values (will be cast later).
+	int compression_method = p_preset->get("compression/method");
+	compression_method = compression_method > 0 ? compression_method + 1 : 0;
+
 	String template_path = p_debug ? custom_debug : custom_release;
 
 	template_path = template_path.strip_edges();
@@ -416,6 +422,8 @@ Error EditorExportPlatformJavaScript::export_project(const Ref<EditorExportPrese
 		Vector<uint8_t> data;
 		data.resize(info.uncompressed_size);
 
+		bool should_compress = false;
+
 		//read
 		unzOpenCurrentFile(pkg);
 		unzReadCurrentFile(pkg, data.ptrw(), data.size());
@@ -434,9 +442,9 @@ Error EditorExportPlatformJavaScript::export_project(const Ref<EditorExportPrese
 			file = p_path.get_file().get_basename() + ".js";
 		} else if (file == "godot.worker.js") {
 			file = p_path.get_file().get_basename() + ".worker.js";
-
 		} else if (file == "godot.wasm") {
 			file = p_path.get_file().get_basename() + ".wasm";
+			should_compress = true;
 		}
 
 		String dst = p_path.get_base_dir().plus_file(file);
@@ -446,6 +454,19 @@ Error EditorExportPlatformJavaScript::export_project(const Ref<EditorExportPrese
 			unzClose(pkg);
 			return ERR_FILE_CANT_WRITE;
 		}
+
+		if (compression_method > 0 && should_compress) {
+			Compression::Mode mode = (Compression::Mode)compression_method;
+
+			Vector<uint8_t> data_copy;
+			data_copy.resize(data.size());
+			memcpy(data_copy.ptrw(), data.ptr(), data_copy.size());
+
+			data.resize(Compression::get_max_compressed_buffer_size(data_copy.size(), mode));
+			int result = Compression::compress(data.ptrw(), data_copy.ptr(), data_copy.size(), mode);
+			data.resize(result >= 0 ? result : 0);
+		}
+
 		f->store_buffer(data.ptr(), data.size());
 		memdelete(f);
 
